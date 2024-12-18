@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Phantom Wallet Message Signing</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        max-width: 800px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      button {
+        padding: 10px 20px;
+        margin: 5px;
+        cursor: pointer;
+      }
+      #message {
+        width: 100%;
+        padding: 10px;
+        margin: 10px 0;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Phantom Wallet Message Signing</h1>
+
+    <button id="connectButton">Connect to Phantom</button>
+    <div id="walletAddress"></div>
+
+    <h2>Sign Message</h2>
+    <textarea id="message" placeholder="Enter message to sign"></textarea>
+    <button id="signButton">Sign Message</button>
+
+    <h3>Result:</h3>
+    <div id="signatureResult"></div>
+    <script>
+      const AMP = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+      const basex = (ALPHABET) => {
+        if (ALPHABET.length >= 255) {
+          throw new TypeError("Alphabet too long");
+        }
+        const BASE_MAP = new Uint8Array(256);
+        for (let j = 0; j < BASE_MAP.length; j++) {
+          BASE_MAP[j] = 255;
+        }
+        for (let i = 0; i < ALPHABET.length; i++) {
+          const x = ALPHABET.charAt(i);
+          const xc = x.charCodeAt(0);
+          if (BASE_MAP[xc] !== 255) {
+            throw new TypeError(x + " is ambiguous");
+          }
+          BASE_MAP[xc] = i;
+        }
+        const BASE = ALPHABET.length;
+        const LEADER = ALPHABET.charAt(0);
+        const FACTOR = Math.log(BASE) / Math.log(256); // log(BASE) / log(256), rounded up
+        const iFACTOR = Math.log(256) / Math.log(BASE); // log(256) / log(BASE), rounded up
+        function encode(source) {
+          // eslint-disable-next-line no-empty
+          if (source instanceof Uint8Array) {
+          } else if (ArrayBuffer.isView(source)) {
+            source = new Uint8Array(
+              source.buffer,
+              source.byteOffset,
+              source.byteLength
+            );
+          } else if (Array.isArray(source)) {
+            source = Uint8Array.from(source);
+          }
+          if (!(source instanceof Uint8Array)) {
+            throw new TypeError("Expected Uint8Array");
+          }
+          if (source.length === 0) {
+            return "";
+          }
+          // Skip & count leading zeroes.
+          let zeroes = 0;
+          let length = 0;
+          let pbegin = 0;
+          const pend = source.length;
+          while (pbegin !== pend && source[pbegin] === 0) {
+            pbegin++;
+            zeroes++;
+          }
+          // Allocate enough space in big-endian base58 representation.
+          const size = ((pend - pbegin) * iFACTOR + 1) >>> 0;
+          const b58 = new Uint8Array(size);
+          // Process the bytes.
+          while (pbegin !== pend) {
+            let carry = source[pbegin];
+            // Apply "b58 = b58 * 256 + ch".
+            let i = 0;
+            for (
+              let it1 = size - 1;
+              (carry !== 0 || i < length) && it1 !== -1;
+              it1--, i++
+            ) {
+              carry += (256 * b58[it1]) >>> 0;
+              b58[it1] = carry % BASE >>> 0;
+              carry = (carry / BASE) >>> 0;
+            }
+            if (carry !== 0) {
+              throw new Error("Non-zero carry");
+            }
+            length = i;
+            pbegin++;
+          }
+          // Skip leading zeroes in base58 result.
+          let it2 = size - length;
+          while (it2 !== size && b58[it2] === 0) {
+            it2++;
+          }
+          // Translate the result into a string.
+          let str = LEADER.repeat(zeroes);
+          for (; it2 < size; ++it2) {
+            str += ALPHABET.charAt(b58[it2]);
+          }
+          return str;
+        }
+
+        function decodeUnsafe(source) {
+          if (typeof source !== "string") {
+            throw new TypeError("Expected String");
+          }
+          if (source.length === 0) {
+            return new Uint8Array();
+          }
+          let psz = 0;
+          // Skip and count leading '1's.
+          let zeroes = 0;
+          let length = 0;
+          while (source[psz] === LEADER) {
+            zeroes++;
+            psz++;
+          }
+          // Allocate enough space in big-endian base256 representation.
+          const size = ((source.length - psz) * FACTOR + 1) >>> 0; // log(58) / log(256), rounded up.
+          const b256 = new Uint8Array(size);
+          // Process the characters.
+          while (psz < source.length) {
+            // Decode character
+            let carry = BASE_MAP[source.charCodeAt(psz)];
+            // Invalid character
+            if (carry === 255) {
+              return;
+            }
+            let i = 0;
+            for (
+              let it3 = size - 1;
+              (carry !== 0 || i < length) && it3 !== -1;
+              it3--, i++
+            ) {
+              carry += (BASE * b256[it3]) >>> 0;
+              b256[it3] = carry % 256 >>> 0;
+              carry = (carry / 256) >>> 0;
+            }
+            if (carry !== 0) {
+              throw new Error("Non-zero carry");
+            }
+            length = i;
+            psz++;
+          }
+          // Skip leading zeroes in b256.
+          let it4 = size - length;
+          while (it4 !== size && b256[it4] === 0) {
+            it4++;
+          }
+          const vch = new Uint8Array(zeroes + (size - it4));
+          let j = zeroes;
+          while (it4 !== size) {
+            vch[j++] = b256[it4++];
+          }
+          return vch;
+        }
+        function decode(string) {
+          const buffer = decodeUnsafe(string);
+          if (buffer) {
+            return buffer;
+          }
+          throw new Error("Non-base" + BASE + " character");
+        }
+        return {
+          encode,
+          decodeUnsafe,
+          decode,
+        };
+      };
+      const b58 = basex(AMP);
+
+      let connectedPublicKey = null;
+
+      function isPhantomInstalled() {
+        return window.phantom?.solana?.isPhantom;
+      }
+
+      function getProvider() {
+        if ("phantom" in window) {
+          const provider = window.phantom?.solana;
+          if (provider?.isPhantom) {
+            return provider;
+          }
+        }
+        window.open("https://phantom.app/", "_blank");
+      }
+
+      async function connectWallet() {
+        try {
+          if (!isPhantomInstalled()) {
+            alert("Phantom wallet is not installed!");
+            return;
+          }
+          const provider = getProvider();
+          const resp = await provider.connect();
+          connectedPublicKey = resp.publicKey;
+          const walletAddress = connectedPublicKey.toString();
+          document.getElementById(
+            "walletAddress"
+          ).innerText = `Connected: ${walletAddress}`;
+          document.getElementById("connectButton").disabled = true;
+        } catch (error) {
+          console.error("Error connecting to wallet:", error);
+        }
+      }
+
+      async function signMessage() {
+        try {
+          if (!isPhantomInstalled()) {
+            alert("Phantom wallet is not installed!");
+            return;
+          }
+          if (!connectedPublicKey) {
+            alert("Please connect to Phantom wallet first!");
+            return;
+          }
+
+          const message = document.getElementById("message").value;
+          if (!message) {
+            alert("Please enter a message to sign!");
+            return;
+          }
+
+          const encodedMessage = new TextEncoder().encode(message);
+
+          const provider = getProvider();
+          console.dir(provider);
+          const signedMessage = await provider.signMessage(encodedMessage);
+          console.log("Signed message:", signedMessage);
+
+          const base64Signature = btoa(
+            String.fromCharCode.apply(null, signedMessage.signature)
+          );
+
+          const base58Signature = b58.encode(signedMessage.signature);
+
+          document.getElementById(
+            "signatureResult"
+          ).innerText = `Signature (base58): ${base58Signature}\n\nSignature (base64): ${base64Signature}`;
+        } catch (error) {
+          console.error("Error signing message:", error);
+          alert("Error signing message");
+        }
+      }
+
+      document
+        .getElementById("connectButton")
+        .addEventListener("click", connectWallet);
+      document
+        .getElementById("signButton")
+        .addEventListener("click", signMessage);
+    </script>
+  </body>
+</html>
